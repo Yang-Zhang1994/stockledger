@@ -1,2 +1,3 @@
 /stockledger
 *.out
+perf/results/

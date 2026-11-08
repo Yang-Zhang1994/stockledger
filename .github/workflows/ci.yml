@@ -32,3 +32,8 @@ jobs:
         env:
           MYSQL_DSN: stockledger:stockledger@tcp(127.0.0.1:3306)/stockledger?parseTime=true
       - run: docker build -t stockledger .
+      - name: JMeter contention test (no oversell under 50 concurrent clients)
+        run: perf/run-jmeter.sh
+        env:
+          JMETER_TARGET_HOST: localhost
+          JMETER_DOCKER_ARGS: --network host

@@ -55,10 +55,24 @@ curl localhost:8080/available/SKU-1                 # read model, fed by Kafka
   restarts, the relay drains them and the read model catches up to the same version.
 - Replaying the event history rebuilds exactly the live state.
 
+## Load test (JMeter)
+
+`perf/run-jmeter.sh` starts the service, stocks 100 units, then runs
+`perf/reserve-contention.jmx` in Docker: 50 threads × 10 reservations against the
+same SKU. Every response must be 200 (reserved) or 409 (sold out), and the number
+of 200s must equal the units that left stock.
+
+```
+requests=500 reserved=100 sold_out=400 assertion_failures=0 p95_ms=298
+stock=100 available_after=0
+PASS: no oversell under 50 concurrent clients
+```
+
 ## CI
 
 GitHub Actions and a Jenkinsfile run the same stages: `go vet`, unit tests
 with the race detector, MySQL integration tests, and a Docker image build.
+GitHub Actions also runs the JMeter contention test.
 
 ## Trade-offs I'd revisit
 
