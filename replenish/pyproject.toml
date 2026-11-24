@@ -1,0 +1,15 @@
+[project]
+name = "replenish"
+version = "0.1.0"
+description = "Demand forecasting and reorder planning on top of StockLedger"
+requires-python = ">=3.11"
+dependencies = ["numpy", "pandas", "scikit-learn", "httpx", "anthropic"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["replenish"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

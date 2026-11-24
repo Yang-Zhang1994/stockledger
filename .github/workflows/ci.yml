@@ -37,3 +37,27 @@ jobs:
         env:
           JMETER_TARGET_HOST: localhost
           JMETER_DOCKER_ARGS: --network host
+
+  replenish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: replenish
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      - name: Plan against a live StockLedger
+        run: |
+          (cd .. && go build -o /tmp/stockledger ./cmd/stockledger)
+          /tmp/stockledger -mem -addr :8080 &
+          until curl -sf localhost:8080/healthz; do sleep 0.5; done
+          python -m replenish seed
+          python -m replenish plan | tee plan.txt
+          grep -q BRK-PAD-220 plan.txt
