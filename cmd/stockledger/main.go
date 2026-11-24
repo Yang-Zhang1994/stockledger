@@ -74,7 +74,7 @@ func main() {
 
 	go relay.New(store, pub).Run(ctx, 500*time.Millisecond)
 
-	srv := &http.Server{Addr: *addr, Handler: api.New(inventory.NewService(store), store, read), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: *addr, Handler: api.New(inventory.NewService(store), store, store, read), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)

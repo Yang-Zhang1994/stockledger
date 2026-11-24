@@ -15,6 +15,7 @@ import (
 var ErrConflict = fmt.Errorf("stream changed since it was loaded: %w", inventory.ErrConflict)
 
 type Store interface {
+	Auditor
 	Load(ctx context.Context, sku string) ([]inventory.Event, error)
 	Append(ctx context.Context, sku string, expectedVersion int, events []inventory.Event) error
 	// Unpublished returns events not yet handed to the broker, oldest first (the outbox).
@@ -31,19 +32,29 @@ type Record struct {
 // Memory is an in-process Store for tests and the -mem demo mode.
 type Memory struct {
 	mu        sync.Mutex
-	streams   map[string][]inventory.Event
+	streams   map[string][]Sealed
 	log       []Record
 	published map[int64]bool
 }
 
 func NewMemory() *Memory {
-	return &Memory{streams: map[string][]inventory.Event{}, published: map[int64]bool{}}
+	return &Memory{streams: map[string][]Sealed{}, published: map[int64]bool{}}
 }
 
 func (m *Memory) Load(_ context.Context, sku string) ([]inventory.Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]inventory.Event(nil), m.streams[sku]...), nil
+	var out []inventory.Event
+	for _, s := range m.streams[sku] {
+		out = append(out, s.Event)
+	}
+	return out, nil
+}
+
+func (m *Memory) History(_ context.Context, sku string) ([]Sealed, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]Sealed(nil), m.streams[sku]...), nil
 }
 
 func (m *Memory) Append(_ context.Context, sku string, expectedVersion int, events []inventory.Event) error {
@@ -52,9 +63,13 @@ func (m *Memory) Append(_ context.Context, sku string, expectedVersion int, even
 	if len(m.streams[sku]) != expectedVersion {
 		return ErrConflict
 	}
-	for _, e := range events {
-		m.streams[sku] = append(m.streams[sku], e)
-		m.log = append(m.log, Record{Seq: int64(len(m.log) + 1), Event: e})
+	prev := ""
+	if n := len(m.streams[sku]); n > 0 {
+		prev = m.streams[sku][n-1].Hash
+	}
+	for _, s := range seal(prev, events) {
+		m.streams[sku] = append(m.streams[sku], s)
+		m.log = append(m.log, Record{Seq: int64(len(m.log) + 1), Event: s.Event})
 	}
 	return nil
 }

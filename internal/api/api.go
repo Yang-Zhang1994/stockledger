@@ -6,6 +6,7 @@
 //	POST   /skus/{sku}/reservations/{orderId}/commit
 //	GET    /skus/{sku}            state rebuilt from the event store
 //	GET    /skus/{sku}/events     the raw event history
+//	GET    /skus/{sku}/verify     recompute the hash chain and report the first broken event
 //	GET    /available/{sku}       read model fed by Kafka (eventually consistent)
 package api
 
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Yang-Zhang1994/stockledger/internal/eventstore"
 	"github.com/Yang-Zhang1994/stockledger/internal/inventory"
 	"github.com/Yang-Zhang1994/stockledger/internal/projection"
 )
@@ -22,11 +24,12 @@ import (
 type Handler struct {
 	svc    *inventory.Service
 	stream inventory.Stream
+	audit  eventstore.Auditor
 	read   *projection.Available
 }
 
-func New(svc *inventory.Service, stream inventory.Stream, read *projection.Available) http.Handler {
-	h := &Handler{svc: svc, stream: stream, read: read}
+func New(svc *inventory.Service, stream inventory.Stream, audit eventstore.Auditor, read *projection.Available) http.Handler {
+	h := &Handler{svc: svc, stream: stream, audit: audit, read: read}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/skus/", h.skus)
 	mux.HandleFunc("/available/", h.available)
@@ -71,6 +74,10 @@ func (h *Handler) skus(w http.ResponseWriter, r *http.Request) {
 			evs = []inventory.Event{}
 		}
 		reply(w, http.StatusOK, evs, err)
+		return
+	case route == "GET verify":
+		history, err := h.audit.History(ctx, sku)
+		reply(w, http.StatusOK, eventstore.Verify(sku, history), err)
 		return
 	case route == "POST receive":
 		var body struct{ Qty int }
