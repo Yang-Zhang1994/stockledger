@@ -97,6 +97,47 @@ stock=100 available_after=0
 PASS: no oversell under 50 concurrent clients
 ```
 
+## Replenishment assistant (`replenish/`)
+
+A Python planner on top of the ledger: it forecasts each part's demand, works
+out this week's order, and answers questions about it in plain English.
+StockLedger supplies what is on the shelf right now; the sales history supplies
+demand. The history is **simulated**: 12 rail spare parts over 34 months, with
+steady, weekday-heavy, winter, summer, growing and intermittent demand.
+
+- **Forecast:** a gradient-boosted model (scikit-learn) trained across all parts
+  predicts the next lead time + 1 week of demand as a ratio to each part's recent
+  level, using last year's same window and how demand moved then. Every feature
+  uses only days before the forecast date; a test changes later days and checks
+  nothing moves.
+- **Policy:** weekly order-up-to with safety stock sized from the forecast's own
+  out-of-sample errors, rounded up to the supplier's case pack.
+- **Assistant:** Claude answers through two read-only tools that return numbers
+  computed in code. It can't order anything or do its own arithmetic.
+
+Held out May–Oct 2026 and replayed day by day ([full results](replenish/results/backtest.md)):
+
+| | 28-day moving average | Model |
+|---|---|---|
+| Forecast error (WAPE) | 17.1% | **11.8%** |
+| Stock needed for a 99% fill rate | 1,063 units | **878 (−17%)** |
+| Stock needed for a 99.5% fill rate | 1,406 units | **1,005 (−29%)** |
+
+The first version over-forecast winter parts in summer by 20–30% and needed more
+stock than the baseline at high service levels. Its safety stock came from a model
+fit on too little history to see a year earlier; a longer history and a feature for
+how demand moved at this time last year fixed both. Since the same person wrote the
+simulator and the model, real data would be the real test.
+
+```bash
+cd replenish && python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest -q
+.venv/bin/python -m replenish backtest                 # writes results/backtest.md
+go run ../cmd/stockledger -mem &                       # a live ledger
+.venv/bin/python -m replenish seed && .venv/bin/python -m replenish plan
+ANTHROPIC_API_KEY=... .venv/bin/python -m replenish ask "What should I reorder this week, and why?"
+```
+
 ## CI
 
 GitHub Actions and a Jenkinsfile run the same stages: `go vet`, unit tests
