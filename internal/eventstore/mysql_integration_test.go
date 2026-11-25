@@ -78,3 +78,29 @@ func TestMySQLOutboxRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestMySQLVerifyCatchesDirectEdit(t *testing.T) {
+	ctx := context.Background()
+	s := openMySQL(t)
+	for i, e := range []inventory.Event{
+		{SKU: "IT-3", Version: 1, Type: inventory.StockReceived, Qty: 5},
+		{SKU: "IT-3", Version: 2, Type: inventory.StockReserved, OrderID: "o1", Qty: 2},
+		{SKU: "IT-3", Version: 3, Type: inventory.ReservationCommitted, OrderID: "o1", Qty: 2},
+	} {
+		if err := s.Append(ctx, "IT-3", i, []inventory.Event{e}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, _ := s.History(ctx, "IT-3")
+	if r := Verify("IT-3", h); !r.OK {
+		t.Fatalf("fresh chain should verify: %+v", r)
+	}
+	// Someone with database access lowers a reservation behind the service's back.
+	if _, err := s.db.Exec(`UPDATE events SET qty = 1 WHERE sku = 'IT-3' AND version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	h, _ = s.History(ctx, "IT-3")
+	if r := Verify("IT-3", h); r.OK || r.BrokenAt != 2 {
+		t.Fatalf("want broken at version 2, got %+v", r)
+	}
+}

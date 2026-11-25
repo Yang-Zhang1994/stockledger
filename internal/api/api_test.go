@@ -22,7 +22,7 @@ type env struct {
 func newEnv(t *testing.T) env {
 	store := eventstore.NewMemory()
 	read := projection.NewAvailable()
-	srv := httptest.NewServer(New(inventory.NewService(store), store, read))
+	srv := httptest.NewServer(New(inventory.NewService(store), store, store, read))
 	t.Cleanup(srv.Close)
 	return env{srv, relay.New(store, relay.LocalPublisher(read.Handle))}
 }
@@ -82,5 +82,15 @@ func TestBadInputReturns400(t *testing.T) {
 		if code, _ := e.do(t, "POST", c.path, c.body); code != 400 {
 			t.Errorf("%s %s: want 400, got %d", c.path, c.body, code)
 		}
+	}
+}
+
+func TestVerifyEndpointReportsIntactChain(t *testing.T) {
+	e := newEnv(t)
+	e.do(t, "POST", "/skus/SKU-1/receive", `{"qty":5}`)
+	e.do(t, "POST", "/skus/SKU-1/reservations", `{"orderId":"o1","qty":2}`)
+	code, body := e.do(t, "GET", "/skus/SKU-1/verify", ``)
+	if code != 200 || body["ok"] != true || body["events"] != 2.0 {
+		t.Fatalf("verify: %d %v", code, body)
 	}
 }

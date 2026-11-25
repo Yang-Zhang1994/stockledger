@@ -50,9 +50,24 @@ func (s *MySQL) Append(ctx context.Context, sku string, expectedVersion int, eve
 		if e.Version != expectedVersion+i+1 {
 			return ErrConflict
 		}
+	}
+	// The new events chain onto the hash of the event at expectedVersion. If a
+	// concurrent writer appends first, the UNIQUE key still rejects this insert.
+	prev := ""
+	if expectedVersion > 0 {
+		err := tx.QueryRowContext(ctx,
+			`SELECT hash FROM events WHERE sku = ? AND version = ?`, sku, expectedVersion).Scan(&prev)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrConflict
+		}
+		if err != nil {
+			return err
+		}
+	}
+	for _, e := range seal(prev, events) {
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO events (sku, version, type, order_id, qty) VALUES (?, ?, ?, ?, ?)`,
-			sku, e.Version, e.Type, e.OrderID, e.Qty)
+			`INSERT INTO events (sku, version, type, order_id, qty, hash) VALUES (?, ?, ?, ?, ?, ?)`,
+			sku, e.Version, e.Type, e.OrderID, e.Qty, e.Hash)
 		var me *mysql.MySQLError
 		if errors.As(err, &me) && me.Number == mysqlDuplicateKey {
 			return ErrConflict
@@ -62,6 +77,25 @@ func (s *MySQL) Append(ctx context.Context, sku string, expectedVersion int, eve
 		}
 	}
 	return tx.Commit()
+}
+
+// History returns the SKU's events with their stored hashes, in version order.
+func (s *MySQL) History(ctx context.Context, sku string) ([]Sealed, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT sku, version, type, order_id, qty, hash FROM events WHERE sku = ? ORDER BY version`, sku)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Sealed
+	for rows.Next() {
+		var e Sealed
+		if err := rows.Scan(&e.SKU, &e.Version, &e.Type, &e.OrderID, &e.Qty, &e.Hash); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func (s *MySQL) Unpublished(ctx context.Context, limit int) ([]Record, error) {

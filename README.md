@@ -28,11 +28,12 @@ GET /available/{sku} ◄── projection (read model) ◄── Kafka ◄──
 | Kafka delivers at least once | Consumers skip any event at or below the version they already applied | `projection/available.go` |
 | Events for one SKU arriving out of order | Messages keyed by SKU, so one SKU always maps to one partition; a gap is reported, not silently applied | `relay/kafka.go` |
 | Client retries a reservation | Same order + same qty is a no-op; a different qty is rejected | `inventory/item.go` |
+| Someone edits the events table directly | Hash chain per SKU: each event stores SHA-256 over its fields and the previous event's hash; `GET /skus/{sku}/verify` recomputes it | `eventstore/chain.go` |
 
 ## Run it
 
 ```bash
-go test -race ./...                       # 22 unit tests, no dependencies
+go test -race ./...                       # unit tests, no dependencies
 go run ./cmd/stockledger -mem             # in-memory store, no Kafka
 
 docker compose up -d --wait               # MySQL 8.4 on :3307, Kafka 3.8 (KRaft) on :9092
@@ -45,6 +46,7 @@ curl -X POST localhost:8080/skus/SKU-1/receive      -d '{"qty":5}'
 curl -X POST localhost:8080/skus/SKU-1/reservations -d '{"orderId":"o1","qty":3}'
 curl -X POST localhost:8080/skus/SKU-1/reservations/o1/commit
 curl localhost:8080/skus/SKU-1/events               # full history
+curl localhost:8080/skus/SKU-1/verify               # recompute the hash chain
 curl localhost:8080/available/SKU-1                 # read model, fed by Kafka
 ```
 
@@ -54,6 +56,33 @@ curl localhost:8080/available/SKU-1                 # read model, fed by Kafka
 - With Kafka stopped, writes still succeed and pile up in the outbox; after Kafka
   restarts, the relay drains them and the read model catches up to the same version.
 - Replaying the event history rebuilds exactly the live state.
+- Editing, deleting or reordering any stored event is caught by `verify`, which
+  names the first bad version (unit tests cover each case; an integration test
+  edits a row in MySQL directly).
+
+## Tamper detection
+
+The events table is the only record of what happened to stock, so a changed
+row would silently change history. Each SKU's events form a hash chain: an
+event's hash covers its own fields and the hash before it, so a change to any
+event breaks every link after it.
+
+```bash
+curl localhost:8080/skus/DEMO-1/verify
+{"sku":"DEMO-1","events":3,"ok":true,"head":"b81b7cb2…"}
+
+# lower a reservation behind the service's back
+mysql> UPDATE events SET qty = 1 WHERE sku = 'DEMO-1' AND version = 2;
+
+curl localhost:8080/skus/DEMO-1/verify
+{"sku":"DEMO-1","events":3,"ok":false,"brokenAt":2,"reason":"hash mismatch (event edited, or an earlier event changed)"}
+```
+
+The chain is per SKU, like the optimistic lock, so writes to different SKUs
+never wait on each other. A chain on its own cannot catch two things: deleting
+the newest events, or rewriting an event and recomputing every hash after it.
+Both change the head hash, which `verify` returns so it can be recorded
+somewhere the database can't touch.
 
 ## Load test (JMeter)
 
@@ -79,5 +108,7 @@ GitHub Actions also runs the JMeter contention test.
 - Replaying a long stream gets slow; snapshots every N events would fix it.
 - The read model is in memory, so it rebuilds from Kafka on restart. A real one
   would live in Redis or a table with the last applied version per SKU.
+- Publishing the head hash with each Kafka event would anchor the chain outside
+  MySQL without a separate store.
 - The relay can publish a batch twice if it crashes between publish and mark.
   That's acceptable only because consumers are idempotent.
